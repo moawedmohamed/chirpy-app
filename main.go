@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
@@ -50,5 +52,56 @@ func main() {
 		message := fmt.Sprintf("Hits: %d", hits)
 		w.Write([]byte(message))
 	})
+
+	mux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
+		words := []string{"kerfuffle", "sharbert", "fornax"}
+		type paramters struct {
+			Body string `json:"body"`
+		}
+
+		type errorResponse struct {
+			Error string `json:"error"`
+		}
+
+		type cleanedBody struct {
+			CleanedBody string `json:"cleaned_body"`
+		}
+
+		parasedBody := json.NewDecoder(r.Body)
+		params := paramters{}
+		err := parasedBody.Decode(&params)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(errorResponse{
+				Error: "Something went wrong",
+			})
+			return
+		}
+		if len(params.Body) > 140 {
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(errorResponse{
+				Error: "Chirp is too long",
+			})
+			return
+		}
+		wordsInBody := strings.Fields(params.Body)
+		for i, v := range wordsInBody {
+			for _, c := range words {
+				if strings.EqualFold(strings.ToLower(v), strings.ToLower(c)) {
+					wordsInBody[i] = "****"
+				}
+			}
+		}
+		cleaned := strings.Join(wordsInBody, " ")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		json.NewEncoder(w).Encode(cleanedBody{
+			CleanedBody: cleaned,
+		})
+	})
+
 	log.Fatal(http.ListenAndServe(":8080", mux))
 }
