@@ -1,16 +1,33 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
+	"time"
+	"uuid"
+
+	"github.com/moawedmohamed/chirpy-app.git/handler"
+
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
+	"github.com/moawedmohamed/chirpy-app.git/internal/database"
 )
 
+type UserResponse struct {
+	ID        uuid.UUID `json:"id"`
+	Email     string    `json:"email"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	db             *database.Queries
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -20,9 +37,29 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	})
 }
 
+type paramters struct {
+	Body string `json:"body"`
+}
+
+type errorResponse struct {
+	Error string `json:"error"`
+}
+
 func main() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	dbQueries := database.New(db)
 	mux := http.NewServeMux()
-	cfg := &apiConfig{}
+	cfg := &apiConfig{
+		db: dbQueries,
+	}
 	mux.Handle("/app/", cfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
 	mux.Handle("/assets/", http.StripPrefix("/assets", http.FileServer(http.Dir("assets"))))
 
@@ -46,22 +83,16 @@ func main() {
 		w.Write([]byte(message))
 	})
 	mux.HandleFunc("POST /admin/reset", func(w http.ResponseWriter, r *http.Request) {
+		err := cfg.db.DeleteALLUsers(r.Context())
+		if err != nil {
+			handler.RespondWithError(w, http.StatusInternalServerError, "Couldn't delete users")
+			return
+		}
 		w.WriteHeader(http.StatusOK)
-		cfg.fileserverHits.Store(0)
-		hits := cfg.fileserverHits.Load()
-		message := fmt.Sprintf("Hits: %d", hits)
-		w.Write([]byte(message))
 	})
 
 	mux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
 		words := []string{"kerfuffle", "sharbert", "fornax"}
-		type paramters struct {
-			Body string `json:"body"`
-		}
-
-		type errorResponse struct {
-			Error string `json:"error"`
-		}
 
 		type cleanedBody struct {
 			CleanedBody string `json:"cleaned_body"`
@@ -102,6 +133,30 @@ func main() {
 			CleanedBody: cleaned,
 		})
 	})
+	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
+		type emailData struct {
+			Email string `json:"email"`
+		}
+		parasedBody := json.NewDecoder(r.Body)
+		params := emailData{}
+		err := parasedBody.Decode(&params)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusBadRequest, "something went wrong in the body paring ")
+			return
+		}
 
+		user, err := cfg.db.CreateUser(r.Context(), params.Email)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusInternalServerError, "something went wrong")
+			return
+		}
+		res := UserResponse{
+			ID:        uuid.UUID(user.ID),
+			Email:     user.Email,
+			CreatedAt: user.CreatedAt,
+			UpdatedAt: user.UpdatedAt,
+		}
+		handler.RespondWithJSON(w, http.StatusCreated, res)
+	})
 	log.Fatal(http.ListenAndServe(":8080", mux))
 }
