@@ -74,23 +74,32 @@ func main() {
 		hits := cfg.fileserverHits.Load()
 		message := fmt.Sprintf(`
 			<html>
-	  <body>
-	    <h1>Welcome, Chirpy Admin</h1>
-	    <p>Chirpy has been visited %d times!</p>
-	  </body>
-	</html>
+				  <body>
+	        <h1>Welcome, Chirpy Admin</h1>
+	        <p>Chirpy has been visited %d times!</p>
+	             </body>
+	        </html>	
 			`, hits)
 		w.Write([]byte(message))
 	})
 	mux.HandleFunc("POST /admin/reset", func(w http.ResponseWriter, r *http.Request) {
-		err := cfg.db.DeleteALLUsers(r.Context())
-		if err != nil {
-			handler.RespondWithError(w, http.StatusInternalServerError, "Couldn't delete users")
+		platform := os.Getenv("PLATFORM")
+		if platform == "dev" {
+			err := cfg.db.DeleteALLUsers(r.Context())
+			if err != nil {
+				handler.RespondWithError(w, http.StatusInternalServerError, "Couldn't delete users")
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+
+		} else {
+			w.WriteHeader(http.StatusForbidden)
+			log.Fatal("you cant delete user outside of dev env")
 			return
 		}
-		w.WriteHeader(http.StatusOK)
 	})
-
+	mux.HandleFunc("POST /api/chirps", func(r http.ResponseWriter, w *http.Request) {
+	})
 	mux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
 		words := []string{"kerfuffle", "sharbert", "fornax"}
 
