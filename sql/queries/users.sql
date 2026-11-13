@@ -8,3 +8,8 @@ values (
 -- name: DeleteALLUsers :exec
 
 delete from users;
+
+-- name: CreateChirp :one
+INSERT  INTO  chirps(body,user_id)
+values($1,$2)
+    RETURNING *  ;

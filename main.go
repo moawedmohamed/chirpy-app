@@ -10,7 +10,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
-	"uuid"
+
+	"github.com/google/uuid"
 
 	"github.com/moawedmohamed/chirpy-app.git/handler"
 
@@ -37,10 +38,9 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	})
 }
 
-type paramters struct {
-	Body string `json:"body"`
-}
-
+//	type paramters struct {
+//		Body string `json:"body"`
+//	}
 type errorResponse struct {
 	Error string `json:"error"`
 }
@@ -98,17 +98,24 @@ func main() {
 			return
 		}
 	})
-	mux.HandleFunc("POST /api/chirps", func(r http.ResponseWriter, w *http.Request) {
-	})
-	mux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
+		type BodyData struct {
+			Body   string    `json:"body"`
+			UserID uuid.UUID `json:"user_id"`
+		}
+
 		words := []string{"kerfuffle", "sharbert", "fornax"}
 
 		type cleanedBody struct {
-			CleanedBody string `json:"cleaned_body"`
+			ID        uuid.UUID `json:"id"`
+			CreatedAt time.Time `json:"created_at"`
+			UpdatedAt time.Time `json:"updated_at"`
+			Body      string    `json:"body"`
+			UserID    uuid.UUID `json:"user_id"`
 		}
 
 		parasedBody := json.NewDecoder(r.Body)
-		params := paramters{}
+		params := BodyData{}
 		err := parasedBody.Decode(&params)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -136,10 +143,24 @@ func main() {
 			}
 		}
 		cleaned := strings.Join(wordsInBody, " ")
+		chirp, err := cfg.db.CreateChirp(r.Context(), database.CreateChirpParams{
+			Body:   cleaned,
+			UserID: params.UserID,
+		})
+		if err != nil {
+			log.Fatal(err)
+			handler.RespondWithError(w, http.StatusInternalServerError, "Couldn't create a chirp")
+			return
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(200)
+		w.WriteHeader(201)
 		json.NewEncoder(w).Encode(cleanedBody{
-			CleanedBody: cleaned,
+			ID:        chirp.ID,
+			Body:      chirp.Body,
+			UpdatedAt: chirp.UpdatedAt,
+			CreatedAt: chirp.CreatedAt,
+			UserID:    chirp.UserID,
 		})
 	})
 	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
