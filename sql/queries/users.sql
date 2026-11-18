@@ -1,15 +1,17 @@
 -- name: CreateUser :one
-insert into users (email)
+insert into users (email,hashed_password)
 values (
-    $1
-     )
+    $1,
+$2
+    )
     RETURNING *;
 
 -- name: DeleteALLUsers :exec
 
 delete from users;
 
--- name: CreateChirp :one
-INSERT  INTO  chirps(body,user_id)
-values($1,$2)
-    RETURNING *  ;
+
+-- name: GetUserByEmail :one
+
+SELECT * from users 
+WHERE email=$1;

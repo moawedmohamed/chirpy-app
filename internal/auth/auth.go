@@ -1,0 +1,76 @@
+package auth
+
+import (
+	"errors"
+	"log"
+	"time"
+
+	"github.com/alexedwards/argon2id"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+)
+
+func HashPassword(password string) (string, error) {
+	hashed, err := argon2id.CreateHash(password, argon2id.DefaultParams)
+	if err != nil {
+		return "", err
+	}
+	return hashed, nil
+}
+
+func CheckPasswordHash(password, hash string) (bool, error) {
+	return argon2id.ComparePasswordAndHash(password, hash)
+}
+
+func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (string, error) {
+	if tokenSecret == "" {
+		return "", errors.New("token secret is empty")
+	}
+	claims := jwt.RegisteredClaims{
+		Issuer:    "chirpy-access",
+		Subject:   userID.String(),
+		IssuedAt:  jwt.NewNumericDate(time.Now()),
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signToken, err := token.SignedString([]byte(tokenSecret))
+	if err != nil {
+		return "", err
+	}
+	return signToken, nil
+}
+
+func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
+	if tokenSecret == "" {
+		return uuid.Nil, errors.New("token secret is empty")
+	}
+
+	if tokenSecret == "" {
+		return uuid.Nil, errors.New("TOKEN_SECRET is not set")
+	}
+	claims := &jwt.RegisteredClaims{}
+	token, err := jwt.ParseWithClaims(tokenString,
+		claims,
+		func(token *jwt.Token) (any, error) {
+			return []byte(tokenSecret), nil
+		},
+		jwt.WithValidMethods([]string{"HS256"}),
+		jwt.WithIssuer("chirpy-access"))
+	if err != nil {
+		return uuid.UUID{}, err
+	}
+	if !token.Valid {
+		return uuid.Nil, errors.New("invalid token")
+	}
+
+	userID, err := uuid.Parse(claims.Subject)
+	if err != nil {
+		log.Println("Error parsing user ID from token:", err)
+		return uuid.Nil, errors.New("invalid user ID in token")
+	}
+
+	return userID, nil
+}
+
+
+

@@ -4,11 +4,16 @@
 .env.*
 !.env.example
 
-# Go binaries
+# Go binaries / build artifacts
 /chirpy
+/out
+/tmp/
 *.exe
 *.out
 *.test
+
+# Local scratch notes (may contain credentials)
+/clipboard
 
 # IDEs and editors
 .vscode/
