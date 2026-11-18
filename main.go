@@ -35,10 +35,12 @@ type UserResponse struct {
 	Email     string    `json:"email"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	Token     string    `json:"token,omitempty"`
 }
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
+	jwtSecret      string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -68,7 +70,8 @@ func main() {
 	dbQueries := database.New(db)
 	mux := http.NewServeMux()
 	cfg := &apiConfig{
-		db: dbQueries,
+		db:        dbQueries,
+		jwtSecret: os.Getenv("TOKEN_SECRET"),
 	}
 	mux.Handle("/app/", cfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
 	mux.Handle("/assets/", http.StripPrefix("/assets", http.FileServer(http.Dir("assets"))))
@@ -152,8 +155,7 @@ func main() {
 	})
 	mux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 		type BodyData struct {
-			Body   string    `json:"body"`
-			UserID uuid.UUID `json:"user_id"`
+			Body string `json:"body"`
 		}
 
 		words := []string{"kerfuffle", "sharbert", "fornax"}
@@ -162,22 +164,32 @@ func main() {
 		params := BodyData{}
 		err := parasedBody.Decode(&params)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(errorResponse{
-				Error: "Something went wrong",
-			})
+			handler.RespondWithError(w, http.StatusBadRequest, "something went wrong in the body paring ")
 			return
 		}
 		if len(params.Body) > 140 {
-
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(errorResponse{
-				Error: "Chirp is too long",
-			})
+			handler.RespondWithError(w, http.StatusBadRequest, "chirp body is too long")
 			return
 		}
+		tokenString, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusUnauthorized, "token is invalid")
+			return
+		}
+		log.Println("GetBearerToken: SUCCESS")
+
+		userID, err := auth.ValidateJWT(tokenString, cfg.jwtSecret)
+		log.Println(err)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusUnauthorized, "token is invalid")
+			return
+		}
+		if userID == uuid.Nil {
+			handler.RespondWithError(w, http.StatusUnauthorized, "token is invalid")
+			return
+		}
+		log.Println("ValidateJWT: SUCCESS")
+
 		wordsInBody := strings.Fields(params.Body)
 		for i, v := range wordsInBody {
 			for _, c := range words {
@@ -189,10 +201,10 @@ func main() {
 		cleaned := strings.Join(wordsInBody, " ")
 		chirp, err := cfg.db.CreateChirp(r.Context(), database.CreateChirpParams{
 			Body:   cleaned,
-			UserID: params.UserID,
+			UserID: userID,
 		})
 		if err != nil {
-			log.Fatal(err)
+			log.Printf("Couldn't create chirp: %v", err)
 			handler.RespondWithError(w, http.StatusInternalServerError, "Couldn't create a chirp")
 			return
 		}
@@ -242,8 +254,9 @@ func main() {
 	})
 	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
 		type loginData struct {
-			Passowrd string `json:"password"`
-			Email    string `json:"email"`
+			Passowrd         string `json:"password"`
+			Email            string `json:"email"`
+			ExpiresInSeconds *int   `json:"expires_in_seconds"`
 		}
 		parasedBody := json.NewDecoder(r.Body)
 		params := loginData{}
@@ -276,6 +289,14 @@ func main() {
 			)
 			return
 		}
+		expiresIn := time.Hour
+		if params.ExpiresInSeconds != nil {
+			expiresIn = time.Duration(*params.ExpiresInSeconds) * time.Second
+		}
+		token, err := auth.MakeJWT(user.ID, cfg.jwtSecret, time.Duration(expiresIn))
+		if err != nil {
+			handler.RespondWithError(w, http.StatusInternalServerError, "Failed to generate JWT")
+		}
 		handler.RespondWithJSON(
 			w,
 			http.StatusOK,
@@ -284,6 +305,7 @@ func main() {
 				CreatedAt: user.CreatedAt,
 				UpdatedAt: user.UpdatedAt,
 				Email:     user.Email,
+				Token:     token,
 			},
 		)
 	})
