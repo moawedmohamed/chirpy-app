@@ -31,11 +31,12 @@ type cleanedBody struct {
 }
 
 type UserResponse struct {
-	ID        uuid.UUID `json:"id"`
-	Email     string    `json:"email"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Token     string    `json:"token,omitempty"`
+	ID           uuid.UUID `json:"id"`
+	Email        string    `json:"email"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Token        string    `json:"token,omitempty"`
+	RefreshToken string    `json:"refresh_token,omitempty"`
 }
 type apiConfig struct {
 	fileserverHits atomic.Int32
@@ -48,13 +49,6 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 		cfg.fileserverHits.Add(1)
 		next.ServeHTTP(w, r)
 	})
-}
-
-//	type paramters struct {
-//		Body string `json:"body"`
-//	}
-type errorResponse struct {
-	Error string `json:"error"`
 }
 
 func main() {
@@ -254,9 +248,8 @@ func main() {
 	})
 	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
 		type loginData struct {
-			Passowrd         string `json:"password"`
-			Email            string `json:"email"`
-			ExpiresInSeconds *int   `json:"expires_in_seconds"`
+			Passowrd string `json:"password"`
+			Email    string `json:"email"`
 		}
 		parasedBody := json.NewDecoder(r.Body)
 		params := loginData{}
@@ -289,10 +282,14 @@ func main() {
 			)
 			return
 		}
+		refreshToken := auth.MakeRefreshToken()
+		cfg.db.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+			UserID:    user.ID,
+			Token:     refreshToken,
+			ExpiresAt: time.Now().Add(24 * time.Hour),
+		})
+
 		expiresIn := time.Hour
-		if params.ExpiresInSeconds != nil {
-			expiresIn = time.Duration(*params.ExpiresInSeconds) * time.Second
-		}
 		token, err := auth.MakeJWT(user.ID, cfg.jwtSecret, time.Duration(expiresIn))
 		if err != nil {
 			handler.RespondWithError(w, http.StatusInternalServerError, "Failed to generate JWT")
@@ -301,13 +298,80 @@ func main() {
 			w,
 			http.StatusOK,
 			UserResponse{
-				ID:        user.ID,
-				CreatedAt: user.CreatedAt,
-				UpdatedAt: user.UpdatedAt,
-				Email:     user.Email,
-				Token:     token,
+				ID:           user.ID,
+				CreatedAt:    user.CreatedAt,
+				UpdatedAt:    user.UpdatedAt,
+				Email:        user.Email,
+				Token:        token,
+				RefreshToken: refreshToken,
 			},
 		)
 	})
+
+	mux.HandleFunc("POST /api/logout", func(w http.ResponseWriter, r *http.Request) {}
+	mux.HandleFunc("POST /api/refresh", func(w http.ResponseWriter, r *http.Request) {
+		type res struct {
+			Token string `json:"token"`
+		}
+
+		token, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusUnauthorized, "refresh token is invalid")
+			return
+		}
+		if token == "" {
+			handler.RespondWithError(w, http.StatusUnauthorized, "refresh token is missing")
+			return
+		}
+		refreshToken, err := cfg.db.GetRefreshToken(r.Context(), token)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusUnauthorized, "refresh token is invalid")
+			return
+		}
+		if refreshToken.ExpiresAt.Before(time.Now()) {
+			handler.RespondWithError(w, http.StatusUnauthorized, "refresh token is expired")
+			return
+		}
+		if refreshToken.RevokedAt.Valid {
+			handler.RespondWithError(w, http.StatusUnauthorized, "refresh token is revoked")
+			return
+		}
+		newToken, err := auth.MakeJWT(refreshToken.UserID, cfg.jwtSecret, time.Hour)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusInternalServerError, "failed to generate new token")
+			return
+		}
+		handler.RespondWithJSON(w, http.StatusOK, res{Token: newToken})
+	})
+
+	mux.HandleFunc("POST /api/revoke", func(w http.ResponseWriter, r *http.Request) {
+		token, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusUnauthorized, "refresh token is invalid")
+			return
+		}
+		if token == "" {
+			handler.RespondWithError(w, http.StatusUnauthorized, "refresh token is missing")
+			return
+		}
+		refreshToken, err := cfg.db.GetRefreshToken(r.Context(), token)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusUnauthorized, "refresh token is invalid")
+			return
+		}
+		if refreshToken.ExpiresAt.Before(time.Now()) {
+			handler.RespondWithError(w, http.StatusUnauthorized, "refresh token is expired")
+		}
+		if refreshToken.RevokedAt.Valid {
+			handler.RespondWithError(w, http.StatusUnauthorized, "refresh token is revoked")
+		}
+		errRevoke := cfg.db.RevokeRefreshToken(r.Context(), token)
+		if errRevoke != nil {
+			handler.RespondWithError(w, http.StatusInternalServerError, "failed to revoke refresh token")
+			return
+		}
+		handler.RespondWithJSON(w, http.StatusNoContent, nil)
+	})
+
 	log.Fatal(http.ListenAndServe(":8080", mux))
 }
