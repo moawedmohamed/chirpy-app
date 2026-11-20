@@ -213,6 +213,45 @@ func main() {
 			UserID:    chirp.UserID,
 		})
 	})
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", func(w http.ResponseWriter, r *http.Request) {
+		chirpID := r.PathValue("chirpID")
+		id, err := uuid.Parse(chirpID)
+		if err != nil {
+			log.Fatal(err)
+			handler.RespondWithError(w, http.StatusBadRequest, "invalid chirp id")
+			return
+		}
+		tokenString, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusUnauthorized, "token is invalid")
+			return
+		}
+		userID, err := auth.ValidateJWT(tokenString, cfg.jwtSecret)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusUnauthorized, "token is invalid")
+			return
+		}
+		if userID == uuid.Nil {
+			handler.RespondWithError(w, http.StatusUnauthorized, "token is invalid")
+			return
+		}
+		chirp, err := cfg.db.GetChirpByID(r.Context(), id)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusNotFound, "Couldn't get chirp")
+			return
+		}
+		if chirp.UserID != userID {
+			handler.RespondWithError(w, http.StatusForbidden, "You are not authorized to delete this chirp")
+			return
+		}
+		err = cfg.db.DeleteChirpByID(r.Context(), id)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusInternalServerError, "Couldn't delete chirp")
+			return
+		}
+
+		handler.RespondWithJSON(w, http.StatusNoContent, nil)
+	})
 	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
 		type userData struct {
 			Passowrd string `json:"password"`
@@ -308,7 +347,52 @@ func main() {
 		)
 	})
 
-	mux.HandleFunc("POST /api/logout", func(w http.ResponseWriter, r *http.Request) {}
+	mux.HandleFunc("PUT /api/users", func(w http.ResponseWriter, r *http.Request) {
+		type updateData struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+		parasedBody := json.NewDecoder(r.Body)
+		params := updateData{}
+		err := parasedBody.Decode(&params)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusBadRequest, "something went wrong in the body paring ")
+			return
+		}
+		tokenString, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusUnauthorized, "token is invalid")
+			return
+		}
+		userID, err := auth.ValidateJWT(tokenString, cfg.jwtSecret)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusUnauthorized, "token is invalid")
+			return
+		}
+		if userID == uuid.Nil {
+			handler.RespondWithError(w, http.StatusUnauthorized, "token is invalid")
+			return
+		}
+		hasedPassowrd, err := auth.HashPassword(params.Password)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		user, err := cfg.db.UpdateUser(r.Context(), database.UpdateUserParams{
+			ID:             userID,
+			Email:          params.Email,
+			HashedPassword: hasedPassowrd,
+		})
+		if err != nil {
+			handler.RespondWithError(w, http.StatusInternalServerError, "something went wrong")
+			return
+		}
+		res := UserResponse{
+			ID:    uuid.UUID(user.ID),
+			Email: user.Email,
+		}
+		handler.RespondWithJSON(w, http.StatusOK, res)
+	})
 	mux.HandleFunc("POST /api/refresh", func(w http.ResponseWriter, r *http.Request) {
 		type res struct {
 			Token string `json:"token"`
