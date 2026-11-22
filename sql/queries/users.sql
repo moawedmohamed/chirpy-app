@@ -11,9 +11,13 @@ $2
 delete from users;
 
 
--- name: GetUserByEmail :one
+-- name: GetUserByID :one
 
 SELECT * from users 
+WHERE id=$1;
+
+-- name: GetUserByEmail :one
+SELECT * from users
 WHERE email=$1;
 
 -- name: CreateRefreshToken :one
@@ -42,6 +46,13 @@ WHERE token=$1;
 UPDATE users
 SET email=$2,
     hashed_password=$3,
+    updated_at=NOW()
+WHERE id=$1
+RETURNING *;
+
+-- name: UpdateUserIsChirpyRed :one
+UPDATE users
+SET is_chirpy_red=$2,
     updated_at=NOW()
 WHERE id=$1
 RETURNING *;

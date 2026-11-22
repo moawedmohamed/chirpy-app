@@ -37,11 +37,13 @@ type UserResponse struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 	Token        string    `json:"token,omitempty"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
 }
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	jwtSecret      string
+	polkaKey       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -66,6 +68,7 @@ func main() {
 	cfg := &apiConfig{
 		db:        dbQueries,
 		jwtSecret: os.Getenv("TOKEN_SECRET"),
+		polkaKey:  os.Getenv("POLKA_KEY"),
 	}
 	mux.Handle("/app/", cfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
 	mux.Handle("/assets/", http.StripPrefix("/assets", http.FileServer(http.Dir("assets"))))
@@ -105,10 +108,29 @@ func main() {
 			return
 		}
 	})
-	mux.HandleFunc("/api/chirps", func(w http.ResponseWriter, r *http.Request) {
-		chirps, err := cfg.db.GetAllChirps(r.Context())
+	mux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
+		sortBy := r.URL.Query().Get("sort")
+		queryParams := r.URL.Query().Get("author_id")
+		var chirps []database.Chirp
+		if queryParams != "" {
+			chirpAuthorID, parseErr := uuid.Parse(queryParams)
+			if parseErr != nil {
+				handler.RespondWithError(w, http.StatusBadRequest, "invalid author id")
+				return
+			}
+			if sortBy == "desc" {
+				chirps, err = cfg.db.GetChirpsByUserIDDesc(r.Context(), chirpAuthorID)
+			} else {
+				chirps, err = cfg.db.GetChirpsByUserID(r.Context(), chirpAuthorID)
+			}
+		} else {
+			if sortBy == "desc" {
+				chirps, err = cfg.db.GetAllChirpsDesc(r.Context())
+			} else {
+				chirps, err = cfg.db.GetAllChirps(r.Context())
+			}
+		}
 		if err != nil {
-			log.Fatal(err)
 			handler.RespondWithError(w, http.StatusInternalServerError, "Couldn't fetch the chirps")
 			return
 		}
@@ -153,7 +175,6 @@ func main() {
 		}
 
 		words := []string{"kerfuffle", "sharbert", "fornax"}
-
 		parasedBody := json.NewDecoder(r.Body)
 		params := BodyData{}
 		err := parasedBody.Decode(&params)
@@ -170,8 +191,6 @@ func main() {
 			handler.RespondWithError(w, http.StatusUnauthorized, "token is invalid")
 			return
 		}
-		log.Println("GetBearerToken: SUCCESS")
-
 		userID, err := auth.ValidateJWT(tokenString, cfg.jwtSecret)
 		log.Println(err)
 		if err != nil {
@@ -182,8 +201,6 @@ func main() {
 			handler.RespondWithError(w, http.StatusUnauthorized, "token is invalid")
 			return
 		}
-		log.Println("ValidateJWT: SUCCESS")
-
 		wordsInBody := strings.Fields(params.Body)
 		for i, v := range wordsInBody {
 			for _, c := range words {
@@ -202,10 +219,7 @@ func main() {
 			handler.RespondWithError(w, http.StatusInternalServerError, "Couldn't create a chirp")
 			return
 		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(201)
-		json.NewEncoder(w).Encode(cleanedBody{
+		handler.RespondWithJSON(w, http.StatusCreated, cleanedBody{
 			ID:        chirp.ID,
 			Body:      chirp.Body,
 			UpdatedAt: chirp.UpdatedAt,
@@ -278,10 +292,11 @@ func main() {
 			return
 		}
 		res := UserResponse{
-			ID:        uuid.UUID(user.ID),
-			Email:     user.Email,
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
+			ID:          uuid.UUID(user.ID),
+			Email:       user.Email,
+			CreatedAt:   user.CreatedAt,
+			UpdatedAt:   user.UpdatedAt,
+			IsChirpyRed: user.IsChirpyRed,
 		}
 		handler.RespondWithJSON(w, http.StatusCreated, res)
 	})
@@ -343,6 +358,7 @@ func main() {
 				Email:        user.Email,
 				Token:        token,
 				RefreshToken: refreshToken,
+				IsChirpyRed:  user.IsChirpyRed,
 			},
 		)
 	})
@@ -455,6 +471,52 @@ func main() {
 			return
 		}
 		handler.RespondWithJSON(w, http.StatusNoContent, nil)
+	})
+
+	mux.HandleFunc("POST /api/polka/webhooks", func(w http.ResponseWriter, r *http.Request) {
+		type webhookData struct {
+			Event string `json:"event"`
+			Data  struct {
+				UserID uuid.UUID `json:"user_id"`
+			}
+		}
+		parasedBody := json.NewDecoder(r.Body)
+		params := webhookData{}
+		err := parasedBody.Decode(&params)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusBadRequest, "something went wrong in the body paring ")
+			return
+		}
+		apiKey, err := auth.GetAPIKey(r.Header)
+		if err != nil {
+			handler.RespondWithError(w, http.StatusUnauthorized, "API key is invalid")
+			return
+		}
+		if apiKey != cfg.polkaKey {
+			handler.RespondWithError(w, http.StatusUnauthorized, "invalid API key")
+			return
+		}
+
+		if params.Event != "user.upgraded" {
+			handler.RespondWithJSON(w, http.StatusNoContent, nil)
+		}
+		if params.Event == "user.upgraded" {
+			_, err := cfg.db.GetUserByID(r.Context(), params.Data.UserID)
+			if err != nil {
+				handler.RespondWithError(w, http.StatusInternalServerError, "something went wrong when fetching the user")
+				return
+			}
+			_, err = cfg.db.UpdateUserIsChirpyRed(r.Context(), database.UpdateUserIsChirpyRedParams{
+				ID:          params.Data.UserID,
+				IsChirpyRed: true,
+			})
+			if err != nil {
+				log.Printf("Couldn't update user is_chirpy_red: %v", err)
+				handler.RespondWithError(w, http.StatusInternalServerError, "something went wrong")
+				return
+			}
+			handler.RespondWithJSON(w, http.StatusNoContent, nil)
+		}
 	})
 
 	log.Fatal(http.ListenAndServe(":8080", mux))
